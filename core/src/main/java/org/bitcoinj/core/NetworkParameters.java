@@ -50,6 +50,8 @@ public abstract class NetworkParameters {
     public static final String ID_MAINNET = "org.bitcoin.production";
     /** The string returned by getId() for the testnet. */
     public static final String ID_TESTNET = "org.bitcoin.test";
+    /** The string returned by getId() for testnet4 (the BLAKE2b hardfork network this fork targets). */
+    public static final String ID_TESTNET4 = "org.bitcoin.testnet4";
     /** The string returned by getId() for regtest mode. */
     public static final String ID_REGTEST = "org.bitcoin.regtest";
     /** Unit test network. */
@@ -59,6 +61,8 @@ public abstract class NetworkParameters {
     public static final String PAYMENT_PROTOCOL_ID_MAINNET = "main";
     /** The string used by the payment protocol to represent the test net. */
     public static final String PAYMENT_PROTOCOL_ID_TESTNET = "test";
+    /** The string used by the payment protocol to represent testnet4. */
+    public static final String PAYMENT_PROTOCOL_ID_TESTNET4 = "testnet4";
     /** The string used by the payment protocol to represent unit testing (note that this is non-standard). */
     public static final String PAYMENT_PROTOCOL_ID_UNIT_TESTS = "unittest";
     public static final String PAYMENT_PROTOCOL_ID_REGTEST = "regtest";
@@ -75,6 +79,18 @@ public abstract class NetworkParameters {
     protected String segwitAddressHrp;
     protected int interval;
     protected int targetTimespan;
+
+    // BLAKE2b hardfork (Bitcoin Knots PR #359) and difficulty-policy knobs. The defaults below keep every
+    // pre-existing network on the historical SHA-256d behaviour; only networks that opt in (testnet4)
+    // enable them.
+    /** Height of the first BLAKE2b/header-v2 block, or Integer.MAX_VALUE when the hardfork is not scheduled. */
+    protected int blake2bHeight = Integer.MAX_VALUE;
+    /** One-off difficulty target shift (in bits) applied to the first post-hardfork block. */
+    protected int blake2bTargetShift = 20;
+    /** Whether minimum-difficulty blocks are allowed between the normal retargets (testnet rule). */
+    protected boolean powAllowMinDifficultyBlocks;
+    /** Whether the testnet4 timewarp fix (BIP94) is applied when retargeting. */
+    protected boolean enforceBip94;
     protected int bip32HeaderP2PKHpub;
     protected int bip32HeaderP2PKHpriv;
     protected int bip32HeaderP2WPKHpub;
@@ -179,6 +195,8 @@ public abstract class NetworkParameters {
             return MainNetParams.get();
         } else if (id.equals(ID_TESTNET)) {
             return TestNet3Params.get();
+        } else if (id.equals(ID_TESTNET4)) {
+            return TestNet4Params.get();
         } else if (id.equals(ID_UNITTESTNET)) {
             return UnitTestParams.get();
         } else if (id.equals(ID_REGTEST)) {
@@ -195,6 +213,8 @@ public abstract class NetworkParameters {
             return MainNetParams.get();
         } else if (pmtProtocolId.equals(PAYMENT_PROTOCOL_ID_TESTNET)) {
             return TestNet3Params.get();
+        } else if (pmtProtocolId.equals(PAYMENT_PROTOCOL_ID_TESTNET4)) {
+            return TestNet4Params.get();
         } else if (pmtProtocolId.equals(PAYMENT_PROTOCOL_ID_UNIT_TESTS)) {
             return UnitTestParams.get();
         } else if (pmtProtocolId.equals(PAYMENT_PROTOCOL_ID_REGTEST)) {
@@ -325,6 +345,31 @@ public abstract class NetworkParameters {
     /** Maximum target represents the easiest allowable proof of work. */
     public BigInteger getMaxTarget() {
         return maxTarget;
+    }
+
+    /** Height of the first BLAKE2b/header-v2 block, or Integer.MAX_VALUE when the hardfork is not scheduled. */
+    public int getBlake2bHeight() {
+        return blake2bHeight;
+    }
+
+    /** Returns true once the BLAKE2b hardfork rules apply to the block at the given height. */
+    public boolean isBlake2bActiveAt(int height) {
+        return height >= blake2bHeight;
+    }
+
+    /** One-off difficulty target shift (in bits) applied to the first post-hardfork block. */
+    public int getBlake2bTargetShift() {
+        return blake2bTargetShift;
+    }
+
+    /** Whether minimum-difficulty blocks are allowed between the normal retargets (testnet rule). */
+    public boolean isPowAllowMinDifficultyBlocks() {
+        return powAllowMinDifficultyBlocks;
+    }
+
+    /** Whether the testnet4 timewarp fix (BIP94) is applied when retargeting. */
+    public boolean isEnforceBip94() {
+        return enforceBip94;
     }
 
     /** Returns the 4 byte header for BIP32 wallet P2PKH - public key part. */
