@@ -59,6 +59,18 @@ public class Block extends Message {
     /** How many bytes are required to represent a block header WITHOUT the trailing 00 length byte. */
     public static final int HEADER_SIZE = 80;
 
+    /**
+     * How many bytes are required to represent a BLAKE2b "header v2" block header (Bitcoin Knots PR #359).
+     * Such headers are signalled by bit 31 of the version field.
+     */
+    public static final int HEADER_V2_SIZE = 164;
+
+    /** Version bit that marks a block as a BLAKE2b "header v2" header. */
+    public static final long HEADER_V2_FLAG = 0x80000000L;
+
+    /** Header-v2 flag bit (in {@code headerFlags}): the wire time carries {@code time - timeOffset}. */
+    public static final int BLOCK_HEADER_FLAG_USE_TIME_OFFSET = 4;
+
     static final long ALLOWED_TIME_DRIFT = 2 * 60 * 60; // Same value as Bitcoin Core.
 
     /**
@@ -97,6 +109,19 @@ public class Block extends Message {
     private long time;
     private long difficultyTarget; // "nBits"
     private long nonce;
+
+    // BLAKE2b header-v2 extension fields (Bitcoin Knots PR #359). Only meaningful when isHeaderV2()
+    // is true; they stay at their protocol defaults otherwise.
+    private long nonce2;
+    private long nonce3;
+    private byte[] extranonce = new byte[16];
+    private long timeOffset;
+    private int txCount;            // wire: uint16
+    private int headerFlags;        // low 2 bits: ASIC profile; bit 2 (BLOCK_HEADER_FLAG_USE_TIME_OFFSET): time offset
+    private int xorKeyMaskClearBits;
+    private byte[] xorKey = new byte[16];
+    private int headerHeight;       // int32 (signed)
+    private byte[] mmRhs = new byte[32];
 
     // TODO: Get rid of all the direct accesses to this field. It's a long-since unnecessary holdover from the Dalvik days.
     /** If null, it means this object holds only the headers. */
@@ -229,7 +254,7 @@ public class Block extends Message {
      */
     protected void parseTransactions(final int transactionsOffset) throws ProtocolException {
         cursor = transactionsOffset;
-        optimalEncodingMessageSize = HEADER_SIZE;
+        optimalEncodingMessageSize = getHeaderSize();
         if (payload.length == cursor) {
             // This message is just a header, it has no transactions.
             transactionBytesValid = false;
@@ -258,14 +283,40 @@ public class Block extends Message {
         version = readUint32();
         prevBlockHash = readHash();
         merkleRoot = readHash();
-        time = readUint32();
+        final long timeOnWire = readUint32();
         difficultyTarget = readUint32();
         nonce = readUint32();
-        hash = Sha256Hash.wrapReversed(Sha256Hash.hashTwice(payload, offset, cursor - offset));
+        if (isHeaderV2()) {
+            nonce2 = readUint32();
+            nonce3 = readUint32();
+            // NB: parse() runs from the Message super constructor, before Block's field
+            // initialisers have executed, so the byte-array fields are still null here and
+            // must be assigned (never copied into) directly.
+            extranonce = readBytes(16);
+            timeOffset = readUint32();
+            byte[] txCountBytes = readBytes(2);
+            txCount = (txCountBytes[0] & 0xff) | ((txCountBytes[1] & 0xff) << 8);
+            headerFlags = readBytes(1)[0] & 0xff;
+            xorKeyMaskClearBits = readBytes(1)[0] & 0xff;
+            xorKey = readBytes(16);
+            headerHeight = (int) readUint32(); // int32 LE, reinterpreted as signed
+            mmRhs = readBytes(32);
+        }
+        // The wire carries "time on wire"; the real block time adds timeOffset when the flag is set.
+        time = timeOnWire;
+        if (isHeaderV2() && (headerFlags & BLOCK_HEADER_FLAG_USE_TIME_OFFSET) != 0) {
+            time = (timeOnWire + timeOffset) & 0xFFFFFFFFL;
+        }
+        final int headerSize = getHeaderSize();
+        if (isHeaderV2()) {
+            hash = Sha256Hash.wrap(Blake2b.headerV2Hash(Arrays.copyOfRange(payload, offset, offset + headerSize)));
+        } else {
+            hash = Sha256Hash.wrapReversed(Sha256Hash.hashTwice(payload, offset, headerSize));
+        }
         headerBytesValid = serializer.isParseRetainMode();
 
         // transactions
-        parseTransactions(offset + HEADER_SIZE);
+        parseTransactions(offset + headerSize);
         length = cursor - offset;
     }
     
@@ -279,17 +330,33 @@ public class Block extends Message {
     // default for testing
     void writeHeader(OutputStream stream) throws IOException {
         // try for cached write first
-        if (headerBytesValid && payload != null && payload.length >= offset + HEADER_SIZE) {
-            stream.write(payload, offset, HEADER_SIZE);
+        if (headerBytesValid && payload != null && payload.length >= offset + getHeaderSize()) {
+            stream.write(payload, offset, getHeaderSize());
             return;
         }
         // fall back to manual write
-        Utils.uint32ToByteStreamLE(version, stream);
+        Utils.uint32ToByteStreamLE(getCompleteVersion(), stream);
         stream.write(prevBlockHash.getReversedBytes());
         stream.write(getMerkleRoot().getReversedBytes());
-        Utils.uint32ToByteStreamLE(time, stream);
+        Utils.uint32ToByteStreamLE(getTimeOnWire(), stream);
         Utils.uint32ToByteStreamLE(difficultyTarget, stream);
         Utils.uint32ToByteStreamLE(nonce, stream);
+        if (isHeaderV2()) {
+            Utils.uint32ToByteStreamLE(nonce2, stream);
+            Utils.uint32ToByteStreamLE(nonce3, stream);
+            stream.write(extranonce);
+            Utils.uint32ToByteStreamLE(timeOffset, stream);
+            stream.write((byte) txCount);
+            stream.write((byte) (txCount >>> 8));
+            stream.write(headerFlags & 0xff);
+            stream.write(xorKeyMaskClearBits & 0xff);
+            stream.write(xorKey);
+            stream.write(headerHeight & 0xff);
+            stream.write((headerHeight >>> 8) & 0xff);
+            stream.write((headerHeight >>> 16) & 0xff);
+            stream.write((headerHeight >>> 24) & 0xff);
+            stream.write(mmRhs);
+        }
     }
 
     private void writeTransactions(OutputStream stream) throws IOException {
@@ -301,7 +368,7 @@ public class Block extends Message {
 
         // confirmed we must have transactions either cached or as objects.
         if (transactionBytesValid && payload != null && payload.length >= offset + length) {
-            stream.write(payload, offset + HEADER_SIZE, length - HEADER_SIZE);
+            stream.write(payload, offset + getHeaderSize(), length - getHeaderSize());
             return;
         }
 
@@ -334,7 +401,7 @@ public class Block extends Message {
 
         // At least one of the two cacheable components is invalid
         // so fall back to stream write since we can't be sure of the length.
-        ByteArrayOutputStream stream = new UnsafeByteArrayOutputStream(length == UNKNOWN_LENGTH ? HEADER_SIZE + guessTransactionsLength() : length);
+        ByteArrayOutputStream stream = new UnsafeByteArrayOutputStream(length == UNKNOWN_LENGTH ? getHeaderSize() + guessTransactionsLength() : length);
         try {
             writeHeader(stream);
             writeTransactions(stream);
@@ -361,7 +428,7 @@ public class Block extends Message {
      */
     private int guessTransactionsLength() {
         if (transactionBytesValid)
-            return payload.length - HEADER_SIZE;
+            return payload.length - getHeaderSize();
         if (transactions == null)
             return 0;
         int len = VarInt.sizeOf(transactions.size());
@@ -404,9 +471,13 @@ public class Block extends Message {
      */
     private Sha256Hash calculateHash() {
         try {
-            ByteArrayOutputStream bos = new UnsafeByteArrayOutputStream(HEADER_SIZE);
+            ByteArrayOutputStream bos = new UnsafeByteArrayOutputStream(getHeaderSize());
             writeHeader(bos);
-            return Sha256Hash.wrapReversed(Sha256Hash.hashTwice(bos.toByteArray()));
+            byte[] headerBytes = bos.toByteArray();
+            if (isHeaderV2()) {
+                return Sha256Hash.wrap(Blake2b.headerV2Hash(headerBytes));
+            }
+            return Sha256Hash.wrapReversed(Sha256Hash.hashTwice(headerBytes));
         } catch (IOException e) {
             throw new RuntimeException(e); // Cannot happen.
         }
@@ -467,6 +538,19 @@ public class Block extends Message {
         block.time = time;
         block.difficultyTarget = difficultyTarget;
         block.transactions = null;
+        if (isHeaderV2()) {
+            block.nonce2 = nonce2;
+            block.nonce3 = nonce3;
+            System.arraycopy(extranonce, 0, block.extranonce, 0, 16);
+            block.timeOffset = timeOffset;
+            block.txCount = txCount;
+            block.headerFlags = headerFlags;
+            block.xorKeyMaskClearBits = xorKeyMaskClearBits;
+            System.arraycopy(xorKey, 0, block.xorKey, 0, 16);
+            block.headerHeight = headerHeight;
+            System.arraycopy(mmRhs, 0, block.mmRhs, 0, 32);
+            block.length = HEADER_V2_SIZE;
+        }
         block.hash = getHash();
     }
 
@@ -1037,6 +1121,138 @@ public class Block extends Message {
     @VisibleForTesting
     boolean isHeaderBytesValid() {
         return headerBytesValid;
+    }
+
+    /**
+     * Returns true if this is a BLAKE2b "header v2" block (bit 31 of the version field is set), as
+     * defined by the Bitcoin Knots hardfork (Bitcoin Knots PR #359).
+     */
+    public boolean isHeaderV2() {
+        return (version & HEADER_V2_FLAG) != 0;
+    }
+
+    /** Sets or clears the BLAKE2b header-v2 marker (bit 31 of the version field). */
+    public void setHeaderV2(boolean v2) {
+        version = v2 ? (version | HEADER_V2_FLAG) : (version & ~HEADER_V2_FLAG);
+        unCacheHeader();
+    }
+
+    /** Size in bytes of this block header: 164 for header v2, 80 otherwise. */
+    public int getHeaderSize() {
+        return isHeaderV2() ? HEADER_V2_SIZE : HEADER_SIZE;
+    }
+
+    /** The complete 32-bit version as it appears on the wire (header-v2 flag included). */
+    public long getCompleteVersion() {
+        return version & 0xFFFFFFFFL;
+    }
+
+    /** The time value carried on the wire (block time minus timeOffset when the time-offset flag is set). */
+    public long getTimeOnWire() {
+        if (!isHeaderV2() || (headerFlags & BLOCK_HEADER_FLAG_USE_TIME_OFFSET) == 0) {
+            return time & 0xFFFFFFFFL;
+        }
+        return (time - timeOffset) & 0xFFFFFFFFL;
+    }
+
+    public long getNonce2() {
+        return nonce2;
+    }
+
+    public void setNonce2(long nonce2) {
+        this.nonce2 = nonce2;
+        unCacheHeader();
+    }
+
+    public long getNonce3() {
+        return nonce3;
+    }
+
+    public void setNonce3(long nonce3) {
+        this.nonce3 = nonce3;
+        unCacheHeader();
+    }
+
+    public byte[] getExtranonce() {
+        return extranonce.clone();
+    }
+
+    public void setExtranonce(byte[] extranonce) {
+        if (extranonce == null || extranonce.length != 16) {
+            throw new IllegalArgumentException("extranonce must be 16 bytes");
+        }
+        System.arraycopy(extranonce, 0, this.extranonce, 0, 16);
+        unCacheHeader();
+    }
+
+    public long getTimeOffset() {
+        return timeOffset;
+    }
+
+    public void setTimeOffset(long timeOffset) {
+        this.timeOffset = timeOffset;
+        unCacheHeader();
+    }
+
+    public int getTxCount() {
+        return txCount;
+    }
+
+    public void setTxCount(int txCount) {
+        this.txCount = txCount & 0xffff;
+        unCacheHeader();
+    }
+
+    public int getHeaderFlags() {
+        return headerFlags;
+    }
+
+    public void setHeaderFlags(int headerFlags) {
+        this.headerFlags = headerFlags & 0xff;
+        unCacheHeader();
+    }
+
+    public int getXorKeyMaskClearBits() {
+        return xorKeyMaskClearBits;
+    }
+
+    public void setXorKeyMaskClearBits(int xorKeyMaskClearBits) {
+        this.xorKeyMaskClearBits = xorKeyMaskClearBits & 0xff;
+        unCacheHeader();
+    }
+
+    public byte[] getXorKey() {
+        return xorKey.clone();
+    }
+
+    public void setXorKey(byte[] xorKey) {
+        if (xorKey == null || xorKey.length != 16) {
+            throw new IllegalArgumentException("xorKey must be 16 bytes");
+        }
+        System.arraycopy(xorKey, 0, this.xorKey, 0, 16);
+        unCacheHeader();
+    }
+
+    /** Height committed by a header-v2 block, or 0 for pre-hardfork headers. */
+    public int getHeaderHeight() {
+        return headerHeight;
+    }
+
+    public void setHeaderHeight(int headerHeight) {
+        this.headerHeight = headerHeight;
+        unCacheHeader();
+    }
+
+    public byte[] getMmRhs() {
+        return mmRhs.clone();
+    }
+
+    public void setMmRhs(byte[] mmRhs) {
+        if (mmRhs == null || mmRhs.length != 32) {
+            throw new IllegalArgumentException("mmRhs must be 32 bytes");
+        }
+        System.arraycopy(mmRhs, 0, this.mmRhs, 0, 32);
+        unCacheHeader();
     }
 
     @VisibleForTesting
