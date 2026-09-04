@@ -51,6 +51,39 @@ public class Blake2bHeaderHashTest {
     }
 
     /**
+     * Cross-checks against real live testnet4 headers fetched from the
+     * explorer (mempool.guide/testnet4, Esplora-compatible, header-v2 aware).
+     * Block 150308 is the first BLAKE2b/header-v2 block of the live chain;
+     * blocks 150307 and 149537 are still SHA-256d/v1.
+     */
+    @Test
+    public void liveTestnet4Headers() throws Exception {
+        checkLive("h150308.txt", "000000000000b9d1b7e1bb0e77215ee92c6ef7ec8f4473e23908380649e779b6",
+                164, 150308);
+        checkLive("h150307.txt", "000000000017ec2251d81c8d2ca401c713e98e85196c7f660a4088a7ca57b1cc",
+                80, -1);
+        checkLive("h149537.txt", "00000000008718548961fc1af48c515037b1b5f2efe6e778c60ed0b37a593744",
+                80, -1);
+    }
+
+    private void checkLive(String resource, String expectedId, int expectedHeaderSize, int expectedHeight) throws Exception {
+        NetworkParameters params = MainNetParams.get();
+        BitcoinSerializer serializer = params.getSerializer(true);
+        InputStream in = getClass().getResourceAsStream(resource);
+        assertNotNull("live header resource missing: " + resource, in);
+        byte[] serialized = Utils.HEX.decode(new String(in.readAllBytes(), java.nio.charset.StandardCharsets.US_ASCII).trim());
+        assertEquals(resource + ": header length", expectedHeaderSize, serialized.length);
+        Block header = serializer.makeBlock(serialized, 0, Message.UNKNOWN_LENGTH);
+        assertEquals(resource + ": v2 flag", expectedHeaderSize == 164, header.isHeaderV2());
+        assertEquals(resource + ": header size", expectedHeaderSize, header.getHeaderSize());
+        assertEquals(resource + ": block id", expectedId, header.getHashAsString());
+        if (expectedHeight >= 0) {
+            assertEquals(resource + ": header height", expectedHeight, header.getHeaderHeight());
+        }
+        assertEquals(resource + ": round trip", Utils.HEX.encode(serialized), Utils.HEX.encode(header.bitcoinSerialize()));
+    }
+
+    /**
      * Parses each official vector through the real {@link Block} header path
      * (same code path used for P2P headers messages) and checks that the parsed
      * header hashes to the published block hash and re-serializes byte-for-byte.
