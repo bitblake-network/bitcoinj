@@ -6,8 +6,10 @@ import org.bitcoinj.params.MainNetParams;
 import org.junit.Test;
 
 import java.io.InputStream;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -81,6 +83,42 @@ public class Blake2bHeaderHashTest {
             assertEquals(resource + ": header height", expectedHeight, header.getHeaderHeight());
         }
         assertEquals(resource + ": round trip", Utils.HEX.encode(serialized), Utils.HEX.encode(header.bitcoinSerialize()));
+    }
+
+    /**
+     * A P2P headers message can mix pre-fork v1 (80-byte) and post-fork v2
+     * (164-byte) headers in one payload, as happens while an SPV client crosses
+     * the BLAKE2b activation. This exercises the variable-size cursor advance
+     * end to end with real live headers.
+     */
+    @Test
+    public void headersMessageMixedV1AndV2() throws Exception {
+        NetworkParameters params = MainNetParams.get();
+        Block v1 = loadHeader(params, "h150307.txt");
+        Block v2 = loadHeader(params, "h150308.txt");
+
+        HeadersMessage sent = new HeadersMessage(params, v1.cloneAsHeader(), v2.cloneAsHeader());
+        HeadersMessage parsed = new HeadersMessage(params, sent.bitcoinSerialize());
+        List<Block> headers = parsed.getBlockHeaders();
+        assertEquals("two headers", 2, headers.size());
+
+        assertEquals(v1.getHashAsString(), headers.get(0).getHashAsString());
+        assertFalse(headers.get(0).isHeaderV2());
+        assertEquals(80, headers.get(0).getHeaderSize());
+
+        assertEquals(v2.getHashAsString(), headers.get(1).getHashAsString());
+        assertTrue(headers.get(1).isHeaderV2());
+        assertEquals(164, headers.get(1).getHeaderSize());
+        assertEquals(150308, headers.get(1).getHeaderHeight());
+    }
+
+    private Block loadHeader(NetworkParameters params, String resource) throws Exception {
+        BitcoinSerializer serializer = params.getSerializer(true);
+        InputStream in = getClass().getResourceAsStream(resource);
+        assertNotNull("live header resource missing: " + resource, in);
+        byte[] serialized = Utils.HEX.decode(
+                new String(in.readAllBytes(), java.nio.charset.StandardCharsets.US_ASCII).trim());
+        return serializer.makeBlock(serialized, 0, Message.UNKNOWN_LENGTH);
     }
 
     /**

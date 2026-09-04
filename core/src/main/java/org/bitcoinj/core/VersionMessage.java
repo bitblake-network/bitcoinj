@@ -56,6 +56,8 @@ public class VersionMessage extends Message {
     public static final int NODE_BLOOM = 1 << 2;
     /** Indicates that a node can be asked for blocks and transactions including witness data. */
     public static final int NODE_WITNESS = 1 << 3;
+    /** A service bit that denotes whether the node enforces the BLAKE2b hardfork rules (Bitcoin Knots PR #359). */
+    public static final int NODE_BLAKE2B = 1 << 28;
     /** A service bit that denotes whether the peer has at least the last two days worth of blockchain (BIP159). */
     public static final int NODE_NETWORK_LIMITED = 1 << 10;
     /** A service bit used by Bitcoin-ABC to announce Bitcoin Cash nodes. */

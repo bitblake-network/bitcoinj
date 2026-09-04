@@ -71,6 +71,12 @@ public class Block extends Message {
     /** Header-v2 flag bit (in {@code headerFlags}): the wire time carries {@code time - timeOffset}. */
     public static final int BLOCK_HEADER_FLAG_USE_TIME_OFFSET = 4;
 
+    // Zero defaults for the header-v2 byte-array fields. They are intentionally NOT field
+    // initialisers: parse() runs from the Message super constructor, before Block's field
+    // initialisers execute, so any initialiser here would wipe the values parsed in parse().
+    private static final byte[] ZERO_16 = new byte[16];
+    private static final byte[] ZERO_32 = new byte[32];
+
     static final long ALLOWED_TIME_DRIFT = 2 * 60 * 60; // Same value as Bitcoin Core.
 
     /**
@@ -111,17 +117,18 @@ public class Block extends Message {
     private long nonce;
 
     // BLAKE2b header-v2 extension fields (Bitcoin Knots PR #359). Only meaningful when isHeaderV2()
-    // is true; they stay at their protocol defaults otherwise.
+    // is true; they stay at their protocol defaults otherwise. The byte-array fields are null until
+    // parsed or set (see ZERO_16/ZERO_32 for the read defaults).
     private long nonce2;
     private long nonce3;
-    private byte[] extranonce = new byte[16];
+    private byte[] extranonce;      // 16 bytes
     private long timeOffset;
     private int txCount;            // wire: uint16
     private int headerFlags;        // low 2 bits: ASIC profile; bit 2 (BLOCK_HEADER_FLAG_USE_TIME_OFFSET): time offset
     private int xorKeyMaskClearBits;
-    private byte[] xorKey = new byte[16];
+    private byte[] xorKey;          // 16 bytes
     private int headerHeight;       // int32 (signed)
-    private byte[] mmRhs = new byte[32];
+    private byte[] mmRhs;           // 32 bytes
 
     // TODO: Get rid of all the direct accesses to this field. It's a long-since unnecessary holdover from the Dalvik days.
     /** If null, it means this object holds only the headers. */
@@ -344,18 +351,18 @@ public class Block extends Message {
         if (isHeaderV2()) {
             Utils.uint32ToByteStreamLE(nonce2, stream);
             Utils.uint32ToByteStreamLE(nonce3, stream);
-            stream.write(extranonce);
+            stream.write(extranonce != null ? extranonce : ZERO_16);
             Utils.uint32ToByteStreamLE(timeOffset, stream);
             stream.write((byte) txCount);
             stream.write((byte) (txCount >>> 8));
             stream.write(headerFlags & 0xff);
             stream.write(xorKeyMaskClearBits & 0xff);
-            stream.write(xorKey);
+            stream.write(xorKey != null ? xorKey : ZERO_16);
             stream.write(headerHeight & 0xff);
             stream.write((headerHeight >>> 8) & 0xff);
             stream.write((headerHeight >>> 16) & 0xff);
             stream.write((headerHeight >>> 24) & 0xff);
-            stream.write(mmRhs);
+            stream.write(mmRhs != null ? mmRhs : ZERO_32);
         }
     }
 
@@ -541,14 +548,14 @@ public class Block extends Message {
         if (isHeaderV2()) {
             block.nonce2 = nonce2;
             block.nonce3 = nonce3;
-            System.arraycopy(extranonce, 0, block.extranonce, 0, 16);
+            block.extranonce = (extranonce != null ? extranonce : ZERO_16).clone();
             block.timeOffset = timeOffset;
             block.txCount = txCount;
             block.headerFlags = headerFlags;
             block.xorKeyMaskClearBits = xorKeyMaskClearBits;
-            System.arraycopy(xorKey, 0, block.xorKey, 0, 16);
+            block.xorKey = (xorKey != null ? xorKey : ZERO_16).clone();
             block.headerHeight = headerHeight;
-            System.arraycopy(mmRhs, 0, block.mmRhs, 0, 32);
+            block.mmRhs = (mmRhs != null ? mmRhs : ZERO_32).clone();
             block.length = HEADER_V2_SIZE;
         }
         block.hash = getHash();
@@ -1174,12 +1181,15 @@ public class Block extends Message {
     }
 
     public byte[] getExtranonce() {
-        return extranonce.clone();
+        return (extranonce != null ? extranonce : ZERO_16).clone();
     }
 
     public void setExtranonce(byte[] extranonce) {
         if (extranonce == null || extranonce.length != 16) {
             throw new IllegalArgumentException("extranonce must be 16 bytes");
+        }
+        if (this.extranonce == null) {
+            this.extranonce = new byte[16];
         }
         System.arraycopy(extranonce, 0, this.extranonce, 0, 16);
         unCacheHeader();
@@ -1222,12 +1232,15 @@ public class Block extends Message {
     }
 
     public byte[] getXorKey() {
-        return xorKey.clone();
+        return (xorKey != null ? xorKey : ZERO_16).clone();
     }
 
     public void setXorKey(byte[] xorKey) {
         if (xorKey == null || xorKey.length != 16) {
             throw new IllegalArgumentException("xorKey must be 16 bytes");
+        }
+        if (this.xorKey == null) {
+            this.xorKey = new byte[16];
         }
         System.arraycopy(xorKey, 0, this.xorKey, 0, 16);
         unCacheHeader();
@@ -1244,12 +1257,15 @@ public class Block extends Message {
     }
 
     public byte[] getMmRhs() {
-        return mmRhs.clone();
+        return (mmRhs != null ? mmRhs : ZERO_32).clone();
     }
 
     public void setMmRhs(byte[] mmRhs) {
         if (mmRhs == null || mmRhs.length != 32) {
             throw new IllegalArgumentException("mmRhs must be 32 bytes");
+        }
+        if (this.mmRhs == null) {
+            this.mmRhs = new byte[32];
         }
         System.arraycopy(mmRhs, 0, this.mmRhs, 0, 32);
         unCacheHeader();
