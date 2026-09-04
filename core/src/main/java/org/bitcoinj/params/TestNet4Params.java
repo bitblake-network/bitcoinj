@@ -19,7 +19,11 @@ package org.bitcoinj.params;
 import org.bitcoinj.core.Block;
 import org.bitcoinj.core.NetworkParameters;
 import org.bitcoinj.core.Sha256Hash;
+import org.bitcoinj.core.StoredBlock;
 import org.bitcoinj.core.Utils;
+import org.bitcoinj.core.VerificationException;
+import org.bitcoinj.store.BlockStore;
+import org.bitcoinj.store.BlockStoreException;
 
 import java.util.Collections;
 
@@ -117,5 +121,71 @@ public class TestNet4Params extends AbstractBitcoinNetParams {
     @Override
     public String getPaymentProtocolId() {
         return PAYMENT_PROTOCOL_ID_TESTNET4;
+    }
+
+    /**
+     * Difficulty-transition validation mirroring Bitcoin Core's
+     * {@code GetNextWorkRequired} (src/pow.cpp) for a network with the testnet
+     * minimum-difficulty rule, the BIP94 timewarp fix and the one-off BLAKE2b
+     * target shift at {@link #BLAKE2B_ACTIVATION_HEIGHT}. The comparison is on
+     * the exact compact nBits value, as the node enforces it.
+     */
+    @Override
+    public void checkDifficultyTransitions(final StoredBlock storedPrev, final Block nextBlock,
+            final BlockStore blockStore) throws VerificationException, BlockStoreException {
+        final Block prev = storedPrev.getHeader();
+        final int prevHeight = storedPrev.getHeight();
+        final long powLimitCompact = Utils.encodeCompactBits(getMaxTarget());
+        long expected;
+
+        if (!isDifficultyTransitionPoint(prevHeight)) {
+            // Off the 2016-block boundary.
+            if (isPowAllowMinDifficultyBlocks()) {
+                // Testnet rule: after 2*10 minutes without a block a minimum-difficulty
+                // block is allowed; otherwise the difficulty must equal the last
+                // non-minimum-difficulty block.
+                if (nextBlock.getTimeSeconds() > prev.getTimeSeconds() + (long) NetworkParameters.TARGET_SPACING * 2) {
+                    expected = powLimitCompact;
+                } else {
+                    // Walk backwards to the last block that is not at the minimum difficulty
+                    // and not on a period boundary.
+                    StoredBlock cursor = storedPrev;
+                    while (cursor.getHeight() > 0
+                            && cursor.getHeight() % getInterval() != 0
+                            && Utils.decodeCompactBits(cursor.getHeader().getDifficultyTarget()).equals(getMaxTarget())) {
+                        cursor = cursor.getPrev(blockStore);
+                    }
+                    expected = cursor.getHeader().getDifficultyTarget();
+                }
+            } else {
+                expected = prev.getDifficultyTarget();
+            }
+        } else {
+            // 2016-block retarget boundary: the next block starts a new period. Rebase on
+            // the first block of the period just ended (BIP94 timewarp fix on testnet4).
+            StoredBlock first = storedPrev;
+            for (int i = 0; i < getInterval() - 1; i++) {
+                first = first.getPrev(blockStore);
+            }
+            long actualTimespan = prev.getTimeSeconds() - first.getHeader().getTimeSeconds();
+            if (actualTimespan < NetworkParameters.TARGET_TIMESPAN / 4) {
+                actualTimespan = NetworkParameters.TARGET_TIMESPAN / 4;
+            }
+            if (actualTimespan > NetworkParameters.TARGET_TIMESPAN * 4) {
+                actualTimespan = NetworkParameters.TARGET_TIMESPAN * 4;
+            }
+            expected = calculateNextWorkRequired(prev.getDifficultyTarget(),
+                    first.getHeader().getDifficultyTarget(), actualTimespan, getMaxTarget(), isEnforceBip94());
+        }
+
+        // One-off BLAKE2b target shift for the first block mined under the new algorithm.
+        if (prevHeight + 1 == getBlake2bHeight()) {
+            expected = applyBlake2bTargetShift(expected, getMaxTarget(), getBlake2bTargetShift());
+        }
+
+        if (nextBlock.getDifficultyTarget() != expected) {
+            throw new VerificationException("Testnet4 block difficulty transition is not allowed: "
+                    + Long.toHexString(nextBlock.getDifficultyTarget()) + " vs " + Long.toHexString(expected));
+        }
     }
 }

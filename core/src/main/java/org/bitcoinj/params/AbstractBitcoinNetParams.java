@@ -75,6 +75,47 @@ public abstract class AbstractBitcoinNetParams extends NetworkParameters {
         return ((height + 1) % this.getInterval()) == 0;
     }
 
+    /**
+     * Faithful port of Bitcoin Core's {@code ApplyBlake2bTargetShift}
+     * (src/pow.cpp, Bitcoin Knots PR #359): the one-off difficulty target shift
+     * applied to the first block mined under the BLAKE2b algorithm. The target
+     * is shifted left by {@code shift} bits and capped at {@code powLimit}.
+     *
+     * @return the shifted target, re-encoded as a compact nBits value.
+     */
+    public static long applyBlake2bTargetShift(long nBits, BigInteger powLimit, int shift) {
+        BigInteger target = Utils.decodeCompactBits(nBits);
+        if (target.compareTo(powLimit.shiftRight(shift)) > 0) {
+            return Utils.encodeCompactBits(powLimit);
+        }
+        return Utils.encodeCompactBits(target.shiftLeft(shift));
+    }
+
+    /**
+     * Faithful port of Bitcoin Core's {@code CalculateNextWorkRequired}
+     * (src/pow.cpp): computes the compact nBits for the next difficulty period
+     * from the previous period's measured time span. When {@code enforceBip94}
+     * is set (testnet4) the target is rebased on the {@code first-of-period}
+     * block's bits (the BIP94 timewarp fix) instead of the last block's.
+     *
+     * @param prevBits         nBits of the last block of the previous period
+     * @param firstPeriodBits  nBits of the first block of the previous period (BIP94 base)
+     * @param actualTimespan   measured time span, already bounded to [targetTimespan/4, targetTimespan*4]
+     * @param powLimit         the proof-of-work limit target
+     * @param enforceBip94     whether to apply the testnet4 first-of-period base rule
+     * @return the next period's compact nBits
+     */
+    public static long calculateNextWorkRequired(long prevBits, long firstPeriodBits, long actualTimespan,
+                                                 BigInteger powLimit, boolean enforceBip94) {
+        BigInteger target = Utils.decodeCompactBits(enforceBip94 ? firstPeriodBits : prevBits);
+        target = target.multiply(BigInteger.valueOf(actualTimespan));
+        target = target.divide(BigInteger.valueOf(NetworkParameters.TARGET_TIMESPAN));
+        if (target.compareTo(powLimit) > 0) {
+            target = powLimit;
+        }
+        return Utils.encodeCompactBits(target);
+    }
+
     @Override
     public void checkDifficultyTransitions(final StoredBlock storedPrev, final Block nextBlock,
         final BlockStore blockStore) throws VerificationException, BlockStoreException {
