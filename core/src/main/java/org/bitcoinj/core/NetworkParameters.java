@@ -48,6 +48,8 @@ import org.bitcoinj.utils.VersionTally;
 public abstract class NetworkParameters {
     /** The string returned by getId() for the main, production network where people trade things. */
     public static final String ID_MAINNET = "org.bitcoin.production";
+    /** The string returned by getId() for the BLAKE2b mainnet (Bitcoin Knots hardfork, PR #359). */
+    public static final String ID_MAINNET_BLAKE2B = "org.bitcoin.blake2b-mainnet";
     /** The string returned by getId() for the testnet. */
     public static final String ID_TESTNET = "org.bitcoin.test";
     /** The string returned by getId() for testnet4 (the BLAKE2b hardfork network this fork targets). */
@@ -59,6 +61,8 @@ public abstract class NetworkParameters {
 
     /** The string used by the payment protocol to represent the main net. */
     public static final String PAYMENT_PROTOCOL_ID_MAINNET = "main";
+    /** The string used by the payment protocol to represent the BLAKE2b mainnet. */
+    public static final String PAYMENT_PROTOCOL_ID_MAINNET_BLAKE2B = "main-blake2b";
     /** The string used by the payment protocol to represent the test net. */
     public static final String PAYMENT_PROTOCOL_ID_TESTNET = "test";
     /** The string used by the payment protocol to represent testnet4. */
@@ -193,6 +197,8 @@ public abstract class NetworkParameters {
     public static NetworkParameters fromID(String id) {
         if (id.equals(ID_MAINNET)) {
             return MainNetParams.get();
+        } else if (id.equals(ID_MAINNET_BLAKE2B)) {
+            return MainNetBlake2bParams.get();
         } else if (id.equals(ID_TESTNET)) {
             return TestNet3Params.get();
         } else if (id.equals(ID_TESTNET4)) {
@@ -211,6 +217,8 @@ public abstract class NetworkParameters {
     public static NetworkParameters fromPmtProtocolID(String pmtProtocolId) {
         if (pmtProtocolId.equals(PAYMENT_PROTOCOL_ID_MAINNET)) {
             return MainNetParams.get();
+        } else if (pmtProtocolId.equals(PAYMENT_PROTOCOL_ID_MAINNET_BLAKE2B)) {
+            return MainNetBlake2bParams.get();
         } else if (pmtProtocolId.equals(PAYMENT_PROTOCOL_ID_TESTNET)) {
             return TestNet3Params.get();
         } else if (pmtProtocolId.equals(PAYMENT_PROTOCOL_ID_TESTNET4)) {
