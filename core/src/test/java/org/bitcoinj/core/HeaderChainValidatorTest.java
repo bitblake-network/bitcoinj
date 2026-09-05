@@ -70,6 +70,7 @@ public class HeaderChainValidatorTest {
         int difficultyChecked = 0;
         int difficultySkipped = 0;
         int expectedHeight = -1;
+        int firstHeight = -1;
         Sha256Hash prevHash = null;
         StoredBlock storedPrev = null;
 
@@ -92,6 +93,9 @@ public class HeaderChainValidatorTest {
                 } catch (NumberFormatException e) {
                     failures.append("bad height in line: ").append(line).append('\n');
                     break;
+                }
+                if (firstHeight < 0) {
+                    firstHeight = height;
                 }
                 byte[] raw = Utils.HEX.decode(parts[1].trim());
                 Block header;
@@ -139,17 +143,26 @@ public class HeaderChainValidatorTest {
                     break;
                 }
                 if (storedPrev != null) {
-                    try {
-                        params.checkDifficultyTransitions(storedPrev, header, store);
-                        difficultyChecked++;
-                    } catch (BlockStoreException e) {
-                        // The dump does not reach back far enough for this transition (e.g. a
-                        // min-difficulty walk-back or a period baseline). Not a consensus failure.
+                    // A 2016-boundary check walks back to the first block of the period that
+                    // just ended (storedPrev.getHeight() - INTERVAL + 1). If the dump does not
+                    // reach that far, skip rather than fail: the ancestry is simply missing.
+                    boolean atTransition = (storedPrev.getHeight() + 1) % NetworkParameters.INTERVAL == 0;
+                    boolean ancestryComplete = !atTransition
+                            || (long) storedPrev.getHeight() - NetworkParameters.INTERVAL + 1 >= firstHeight;
+                    if (!ancestryComplete) {
                         difficultySkipped++;
-                    } catch (VerificationException e) {
-                        failures.append("difficulty transition at height ").append(height).append(": ")
-                                .append(e.getMessage()).append('\n');
-                        break;
+                    } else {
+                        try {
+                            params.checkDifficultyTransitions(storedPrev, header, store);
+                            difficultyChecked++;
+                        } catch (BlockStoreException e) {
+                            // Not enough ancestry for e.g. a min-difficulty walk-back.
+                            difficultySkipped++;
+                        } catch (VerificationException e) {
+                            failures.append("difficulty transition at height ").append(height).append(": ")
+                                    .append(e.getMessage()).append('\n');
+                            break;
+                        }
                     }
                 }
                 try {

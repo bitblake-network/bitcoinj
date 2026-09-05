@@ -10,3 +10,6 @@ bin/
 out/
 *.chain
 *.spvchain
+
+# Local full-chain header dumps for the HeaderChainValidatorTest harness
+headers_*.txt

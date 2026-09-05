@@ -16,6 +16,12 @@
 
 package org.bitcoinj.params;
 
+import org.bitcoinj.core.Block;
+import org.bitcoinj.core.StoredBlock;
+import org.bitcoinj.core.VerificationException;
+import org.bitcoinj.store.BlockStore;
+import org.bitcoinj.store.BlockStoreException;
+
 /**
  * Parameters for the BLAKE2b hardfork of the Bitcoin mainnet (Bitcoin Knots
  * PR #359). The BLAKE2b mainnet shares the complete pre-fork history with the
@@ -31,8 +37,14 @@ public class MainNetBlake2bParams extends MainNetParams {
     /** First BLAKE2b/header-v2 block on the BLAKE2b mainnet. */
     public static final int BLAKE2B_ACTIVATION_HEIGHT = 961640;
 
-    /** One-off difficulty target shift applied to the first post-hardfork block (2^20). */
-    public static final int BLAKE2B_TARGET_SHIFT = 20;
+    /**
+     * One-off difficulty target shift applied to the first post-hardfork block.
+     * Knots mainnet sets {@code consensus.Blake2bTargetShift = 22} in
+     * {@code src/kernel/chainparams.cpp} (the testnet4 default is 20); the live
+     * activation block 961640 carries nBits {@code 0x1a008d4f} = shift22 of the
+     * previous block's {@code 0x1702353d} (cross-checked 2026-09-05).
+     */
+    public static final int BLAKE2B_TARGET_SHIFT = 22;
 
     public MainNetBlake2bParams() {
         super();
@@ -56,5 +68,33 @@ public class MainNetBlake2bParams extends MainNetParams {
     @Override
     public String getPaymentProtocolId() {
         return PAYMENT_PROTOCOL_ID_MAINNET_BLAKE2B;
+    }
+
+    /**
+     * Mainnet difficulty-transition validation with the one-off BLAKE2b target
+     * shift at the activation block, mirroring Bitcoin Core's
+     * {@code GetNextWorkRequired} (src/pow.cpp, Knots PR #359): the shift is
+     * applied on top of the normally expected difficulty of the first
+     * post-hardfork block. On the live mainnet the activation height is not on
+     * a 2016-boundary (961640 % 2016 == 8), so the expected base is the ongoing
+     * period's target, i.e. the previous block's nBits; the inherited
+     * {@code MainNetParams} check would otherwise reject the change as an
+     * "unexpected change in difficulty". All other headers (pre-fork and
+     * post-fork) keep the standard strict mainnet rules.
+     */
+    @Override
+    public void checkDifficultyTransitions(final StoredBlock storedPrev, final Block nextBlock,
+            final BlockStore blockStore) throws VerificationException, BlockStoreException {
+        if (storedPrev.getHeight() + 1 == getBlake2bHeight()) {
+            long expected = applyBlake2bTargetShift(storedPrev.getHeader().getDifficultyTarget(),
+                    getMaxTarget(), getBlake2bTargetShift());
+            if (nextBlock.getDifficultyTarget() != expected) {
+                throw new VerificationException("BLAKE2b activation difficulty shift mismatch at height "
+                        + (storedPrev.getHeight() + 1) + ": "
+                        + Long.toHexString(nextBlock.getDifficultyTarget()) + " vs " + Long.toHexString(expected));
+            }
+            return;
+        }
+        super.checkDifficultyTransitions(storedPrev, nextBlock, blockStore);
     }
 }
