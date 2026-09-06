@@ -34,6 +34,7 @@ import org.bitcoinj.core.Address;
 import org.bitcoinj.core.Block;
 import org.bitcoinj.core.ECKey;
 import org.bitcoinj.core.LegacyAddress;
+import org.bitcoinj.core.Message;
 import org.bitcoinj.core.NetworkParameters;
 import org.bitcoinj.core.Sha256Hash;
 import org.bitcoinj.core.StoredBlock;
@@ -192,8 +193,9 @@ public class SPVBlockStoreTest {
     }
 
     @Test
-    public void migrateV1toV2() throws Exception {
-        // create V1 format
+    public void legacyV1FileRebuilt() throws Exception {
+        // Create a legacy V1-format file. Opening it must rebuild the store from genesis for
+        // 164-byte header-v2 support (V3 format); the rebuilt store starts at the genesis block.
         RandomAccessFile raf = new RandomAccessFile(blockStoreFile, "rw");
         FileChannel channel = raf.getChannel();
         ByteBuffer buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0,
@@ -210,14 +212,47 @@ public class SPVBlockStoreTest {
         buffer.put(genesisHash.getBytes()); // chain head
         raf.close();
 
-        // migrate to V2 format
+        // Opening rebuilds the store in the V3 format (header slot sized for header-v2).
         SPVBlockStore store = new SPVBlockStore(TESTNET, blockStoreFile);
 
-        // check block is the same
+        // The rebuilt store starts at the same genesis block.
         assertEquals(genesisHash, store.getChainHead().getHeader().getHash());
-        // check ring cursor
+        // Ring cursor after storing just the genesis block.
         assertEquals(SPVBlockStore.FILE_PROLOGUE_BYTES + SPVBlockStore.RECORD_SIZE_V2 * 1,
                 store.getRingCursor());
+        store.close();
+    }
+
+    @Test
+    public void headerV2RoundTrip() throws Exception {
+        // A 164-byte header-v2 block must survive an SPVBlockStore write/read cycle: the record
+        // header slot is sized for header-v2. Use a real live testnet4 header-v2 block fixture.
+        String hex;
+        try (java.io.InputStream in = SPVBlockStoreTest.class.getResourceAsStream(
+                "/org/bitcoinj/core/h150308.txt")) {
+            hex = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.US_ASCII))
+                    .readLine().trim();
+        }
+        byte[] raw = Utils.HEX.decode(hex);
+        Block v2 = TESTNET.getSerializer(false).makeBlock(raw, 0, Message.UNKNOWN_LENGTH);
+        assertTrue("fixture must be a header-v2 block", v2.isHeaderV2());
+        assertEquals(Block.HEADER_V2_SIZE, v2.getMessageSize());
+
+        SPVBlockStore store = new SPVBlockStore(TESTNET, blockStoreFile);
+        StoredBlock genesis = store.getChainHead();
+        StoredBlock stored = new StoredBlock(v2, genesis.getChainWork().add(v2.getWork()), 1);
+        store.put(stored);
+        store.setChainHead(stored);
+        store.close();
+
+        store = new SPVBlockStore(TESTNET, blockStoreFile);
+        StoredBlock read = store.get(v2.getHash());
+        assertEquals(stored, read);
+        assertTrue(read.getHeader().isHeaderV2());
+        assertEquals(Block.HEADER_V2_SIZE, read.getHeader().getMessageSize());
+        assertEquals(v2.getHash(), read.getHeader().getHash());
+        assertEquals(stored, store.getChainHead());
         store.close();
     }
 }

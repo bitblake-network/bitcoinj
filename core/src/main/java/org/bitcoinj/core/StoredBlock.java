@@ -21,6 +21,7 @@ import org.bitcoinj.store.BlockStoreException;
 
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Objects;
 
@@ -48,8 +49,15 @@ public class StoredBlock {
     private static final byte[] EMPTY_BYTES = new byte[CHAIN_WORK_BYTES_V2]; // fit larger format
     /** Number of bytes serialized by {@link #serializeCompact(ByteBuffer)} */
     public static final int COMPACT_SERIALIZED_SIZE = Block.HEADER_SIZE + CHAIN_WORK_BYTES_V1 + HEIGHT_BYTES;
+    /**
+     * Fixed header slot of the V2 stored-block record. The BLAKE2b hardfork (Knots PR #359) added
+     * 164-byte header-v2 blocks; v1 headers (80 bytes) are zero-padded to this size so every record
+     * has the same fixed length. On read the real header length is recovered from the version's
+     * header-v2 flag.
+     */
+    public static final int STORED_HEADER_SIZE = Block.HEADER_V2_SIZE;
     /** Number of bytes serialized by {@link #serializeCompactV2(ByteBuffer)} */
-    public static final int COMPACT_SERIALIZED_SIZE_V2 = Block.HEADER_SIZE + CHAIN_WORK_BYTES_V2 + HEIGHT_BYTES;
+    public static final int COMPACT_SERIALIZED_SIZE_V2 = STORED_HEADER_SIZE + CHAIN_WORK_BYTES_V2 + HEIGHT_BYTES;
 
     private final Block header;
     private final BigInteger chainWork;
@@ -163,9 +171,15 @@ public class StoredBlock {
         buffer.put(chainWorkBytes);
         buffer.putInt(getHeight());
         // Using unsafeBitcoinSerialize here can give us direct access to the same bytes we read off the wire,
-        // avoiding serialization round-trips.
+        // avoiding serialization round-trips. The header-only block serialization ends with the 0x00
+        // transactions-count byte; we keep only the header itself and zero-pad v1 (80-byte) headers up to
+        // STORED_HEADER_SIZE so every record has the same fixed length (a header-v2 is already 164 bytes).
         byte[] bytes = getHeader().unsafeBitcoinSerialize();
-        buffer.put(bytes, 0, Block.HEADER_SIZE);  // Trim the trailing 00 byte (zero transactions).
+        int headerSize = getHeader().getHeaderSize();
+        buffer.put(bytes, 0, headerSize);
+        for (int i = headerSize; i < STORED_HEADER_SIZE; i++) {
+            buffer.put((byte) 0);
+        }
     }
 
     /**
@@ -197,8 +211,13 @@ public class StoredBlock {
         buffer.get(chainWorkBytes);
         BigInteger chainWork = new BigInteger(1, chainWorkBytes);
         int height = buffer.getInt();  // +4 bytes
-        byte[] header = new byte[Block.HEADER_SIZE + 1];    // Extra byte for the 00 transactions length.
-        buffer.get(header, 0, Block.HEADER_SIZE);
+        byte[] storedHeader = new byte[StoredBlock.STORED_HEADER_SIZE];
+        buffer.get(storedHeader);
+        // Recover the real header length (80 v1 / 164 v2) from the version's header-v2 flag, then parse
+        // exactly that many bytes as a header-only block.
+        long version = Utils.readUint32(storedHeader, 0);
+        int headerSize = (version & Block.HEADER_V2_FLAG) != 0 ? Block.HEADER_V2_SIZE : Block.HEADER_SIZE;
+        byte[] header = Arrays.copyOf(storedHeader, headerSize);
         return new StoredBlock(params.getDefaultSerializer().makeBlock(header), chainWork, height);
     }
 
