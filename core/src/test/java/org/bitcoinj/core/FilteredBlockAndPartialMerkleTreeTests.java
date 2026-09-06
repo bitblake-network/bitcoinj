@@ -107,6 +107,35 @@ public class FilteredBlockAndPartialMerkleTreeTests extends TestWithPeerGroup {
         assertTrue(txns.contains(tx2.getTxId()));
     }
 
+    @Test
+    public void deserializeFilteredBlockWithHeaderV2() throws Exception {
+        // A BIP37 merkle-block carrying a 164-byte header-v2 block (live testnet4 fixture,
+        // block 150308) must parse: the header is sliced by its real length, not a fixed 80.
+        String headerHex;
+        try (java.io.InputStream in = FilteredBlockAndPartialMerkleTreeTests.class.getResourceAsStream(
+                "/org/bitcoinj/core/h150308.txt")) {
+            headerHex = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.US_ASCII))
+                    .readLine().trim();
+        }
+        // One matched transaction (structure only; merkle validation is not exercised here).
+        String tailHex = "01000000" // totalTransactions = 1
+                + "01"              // one hash
+                + "63194f18be0af63f2c6bc9dc0f777cbefed3d9415c4af83f3ee3a3d669c00cb5"
+                + "01"              // one flag byte
+                + "01";
+        FilteredBlock block = new FilteredBlock(UNITTEST, Utils.HEX.decode(headerHex + tailHex));
+
+        assertTrue(block.getBlockHeader().isHeaderV2());
+        assertEquals(Block.HEADER_V2_SIZE, block.getBlockHeader().getMessageSize());
+        assertEquals("000000000000b9d1b7e1bb0e77215ee92c6ef7ec8f4473e23908380649e779b6",
+                block.getBlockHeader().getHashAsString());
+        // A v1 merkle-block still parses after the change.
+        FilteredBlock v1 = new FilteredBlock(UNITTEST, HEX.decode("0100000079cda856b143d9db2c1caff01d1aecc8630d30625d10e8b4b8b0000000000000b50cc069d6a3e33e3ff84a5c41d9d3febe7c770fdcc96b2c3ff60abe184f196367291b4d4c86041b8fa45d630100000001b50cc069d6a3e33e3ff84a5c41d9d3febe7c770fdcc96b2c3ff60abe184f19630101"));
+        assertFalse(v1.getBlockHeader().isHeaderV2());
+        assertEquals(Block.HEADER_SIZE, v1.getBlockHeader().getMessageSize());
+    }
+
     private Sha256Hash numAsHash(int num) {
         byte[] bits = new byte[32];
         bits[0] = (byte) num;
